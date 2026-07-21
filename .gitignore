@@ -6,3 +6,4 @@ dist/
 .vscode/
 .idea/
 tailwindcss.exe
+Build_Outputs/
