@@ -5,7 +5,7 @@
 <h1 align="center">Aether Sleep</h1>
 
 <p align="center">
-  <strong>Advanced Smart Sleep & Shutdown Timer for Windows</strong>
+  <strong>Advanced Smart Hibernation & Shutdown Timer for Windows</strong>
 </p>
 
 <p align="center">
