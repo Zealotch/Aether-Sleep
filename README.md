@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="AetherSleep_Icon.png" alt="Aether Sleep Logo" width="128" height="128">
+  <img src="assets/AetherSleep_Icon.png" alt="Aether Sleep Logo" width="128" height="128">
 </p>
 
 <h1 align="center">Aether Sleep</h1>
