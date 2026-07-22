@@ -110,8 +110,17 @@ def execute_os_action(action):
             subprocess.Popen(["shutdown", "/s", "/t", "0"], creationflags=subprocess.CREATE_NO_WINDOW)
         elif action == "sleep":
             subprocess.Popen(["rundll32.exe", "powrprof.dll,SetSuspendState", "0,1,0"], creationflags=subprocess.CREATE_NO_WINDOW)
+        return True
     except Exception as e:
         print(f"Error executing action: {e}")
+        try:
+            from winotify import Notification, audio
+            notif = Notification(app_id="Aether Sleep", title="Eksekusi Gagal", msg=f"Gagal melakukan {action}: {e}")
+            notif.set_audio(audio.Default, loop=False)
+            notif.show()
+        except:
+            pass
+        return False
 
 def set_wake_timer(target_datetime):
     try:
@@ -351,9 +360,10 @@ def close_window():
 def execute_action(action):
     cancel()
     activity_history.add_history(f"Mengeksekusi aksi: {action.upper()}", "execute", action)
-    execute_os_action(action)
-    os._exit(0)
-    return {"status": "success"}
+    success = execute_os_action(action)
+    if success:
+        os._exit(0)
+    return {"status": "success" if success else "error"}
 
 @eel.expose
 def get_presets():
