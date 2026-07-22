@@ -7,3 +7,6 @@ dist/
 .idea/
 tailwindcss.exe
 Build_Outputs/
+Hibernation APP/build/
+Hibernation APP/dist/
+Hibernation APP/Release/
