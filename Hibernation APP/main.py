@@ -103,12 +103,13 @@ def prevent_sleep(enable=True):
 
 def execute_os_action(action):
     try:
+        import subprocess
         if action == "hibernate":
-            subprocess.run(["shutdown", "/h"])
+            subprocess.Popen(["shutdown", "/h"], creationflags=subprocess.CREATE_NO_WINDOW)
         elif action == "shutdown":
-            subprocess.run(["shutdown", "/s", "/t", "0"])
+            subprocess.Popen(["shutdown", "/s", "/t", "0"], creationflags=subprocess.CREATE_NO_WINDOW)
         elif action == "sleep":
-            subprocess.run(["rundll32.exe", "powrprof.dll,SetSuspendState", "0,1,0"])
+            subprocess.Popen(["rundll32.exe", "powrprof.dll,SetSuspendState", "0,1,0"], creationflags=subprocess.CREATE_NO_WINDOW)
     except Exception as e:
         print(f"Error executing action: {e}")
 
@@ -351,7 +352,7 @@ def execute_action(action):
     cancel()
     activity_history.add_history(f"Mengeksekusi aksi: {action.upper()}", "execute", action)
     execute_os_action(action)
-    sys.exit(0)
+    os._exit(0)
     return {"status": "success"}
 
 @eel.expose
