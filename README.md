@@ -36,7 +36,6 @@ Built with an elegant, modern **Glassmorphism** UI, it feels right at home on mo
 - ⏰ **Auto-Wake (BIOS)**: Set a specific time for your computer to wake up automatically.
 - 💾 **Smart Memory**: Remembers your last used settings, actions, and custom times.
 - 🕹️ **Quick Hide**: Press `ESC` to quickly minimize the app to the System Tray.
-- 🔔 **Discord Integration**: Sends a Discord webhook notification right before your PC goes to sleep.
 
 ## 🚀 Installation
 
@@ -47,7 +46,7 @@ Built with an elegant, modern **Glassmorphism** UI, it feels right at home on mo
 
 ## 💡 How to Use the Smart Trigger
 
-The Smart Trigger is the core feature of Aether Sleep. Here is how to use it for downloading large files:
+The Smart Trigger is the core and unique feature of Aether Sleep. Here is how to use it for downloading large files:
 
 1. Open Aether Sleep.
 2. Under the action dropdown, select **Hibernate (Smart)** or **Shutdown (Smart)**.
