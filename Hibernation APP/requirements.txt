@@ -1,5 +1,7 @@
+eel
 Pillow==12.3.0
 pystray==0.19.5
-customtkinter==5.2.2
+winotify
 psutil
-plyer
+pycaw
+comtypes
