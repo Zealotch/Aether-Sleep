@@ -37,6 +37,7 @@ except ImportError:
     PYCAW_AVAILABLE = False
 
 tray_icon_instance = None
+wake_timer_handle = None
 
 class SchedulerState:
     def __init__(self):
@@ -51,7 +52,7 @@ class SchedulerState:
         self.extra_config = {}
 
 state = SchedulerState()
-
+state_lock = threading.Lock()
 
 # Utility Functions
 def get_resource_dir():
@@ -105,11 +106,11 @@ def execute_os_action(action):
     try:
         import subprocess
         if action == "hibernate":
-            subprocess.Popen(["shutdown", "/h"], creationflags=subprocess.CREATE_NO_WINDOW)
+            ctypes.windll.powrprof.SetSuspendState(True, False, False)
         elif action == "shutdown":
             subprocess.Popen(["shutdown", "/s", "/t", "0"], creationflags=subprocess.CREATE_NO_WINDOW)
         elif action == "sleep":
-            subprocess.Popen(["rundll32.exe", "powrprof.dll,SetSuspendState", "0,1,0"], creationflags=subprocess.CREATE_NO_WINDOW)
+            ctypes.windll.powrprof.SetSuspendState(False, False, False)
         return True
     except Exception as e:
         print(f"Error executing action: {e}")
@@ -123,19 +124,28 @@ def execute_os_action(action):
         return False
 
 def set_wake_timer(target_datetime):
+    global wake_timer_handle
     try:
         kernel32 = ctypes.windll.kernel32
-        timer = kernel32.CreateWaitableTimerW(None, True, "AetherSleepWakeTimer")
         
-        if not timer:
-            return
-            
-        diff_seconds = (target_datetime - datetime.now()).total_seconds()
-        if diff_seconds <= 0:
-            return
-            
-        delay = ctypes.c_longlong(int(-diff_seconds * 10000000))
-        kernel32.SetWaitableTimer(timer, ctypes.byref(delay), 0, None, None, True)
+        with state_lock:
+            if wake_timer_handle:
+                kernel32.CancelWaitableTimer(wake_timer_handle)
+                kernel32.CloseHandle(wake_timer_handle)
+                wake_timer_handle = None
+
+            timer = kernel32.CreateWaitableTimerW(None, True, "AetherSleepWakeTimer")
+            if not timer:
+                return
+                
+            diff_seconds = (target_datetime - datetime.now()).total_seconds()
+            if diff_seconds <= 0:
+                kernel32.CloseHandle(timer)
+                return
+                
+            delay = ctypes.c_longlong(int(-diff_seconds * 10000000))
+            kernel32.SetWaitableTimer(timer, ctypes.byref(delay), 0, None, None, True)
+            wake_timer_handle = timer
     except Exception as e:
         print(f"Error setting wake timer: {e}")
 
@@ -174,118 +184,132 @@ def set_topmost(topmost):
 
 @eel.expose
 def get_current_state():
-    if not state.is_scheduled:
-        return {"status": "idle"}
-    diff = 0
-    if state.current_mode == "timer" and state.target_time:
-        diff = max(0, (state.target_time - datetime.now()).total_seconds())
-    return {
-        "status": "running",
-        "mode": state.current_mode,
-        "action": state.current_action,
-        "remaining_seconds": diff,
-        "target_time": state.target_time.isoformat() if state.target_time else None
-    }
+    with state_lock:
+        if not state.is_scheduled:
+            return {"status": "idle"}
+        diff = 0
+        if state.current_mode == "timer" and state.target_time:
+            diff = max(0, (state.target_time - datetime.now()).total_seconds())
+        return {
+            "status": "running",
+            "mode": state.current_mode,
+            "action": state.current_action,
+            "remaining_seconds": diff,
+            "target_time": state.target_time.isoformat() if state.target_time else None
+        }
 
 @eel.expose
 def check_existing_schedule():
-    
     schedule_file = get_schedule_file()
     if os.path.exists(schedule_file):
         try:
             with open(schedule_file, 'r') as f:
                 data = json.load(f)
+        except Exception:
+            try:
+                os.remove(schedule_file)
+            except: pass
+            return None
             
-            # If state.target_time is in the past or missing for timer, it's invalid unless it's download mode
-            if data.get("mode") == "timer":
-                tt_str = data.get("target_time")
-                if not tt_str:
-                    return None
-                tt = datetime.fromisoformat(tt_str)
-                if tt <= datetime.now():
-                    os.remove(schedule_file)
-                    return None
-            else:
-                tt_str = None
+        try:
+            with state_lock:
+                if data.get("mode") == "timer":
+                    tt_str = data.get("target_time")
+                    if not tt_str:
+                        return None
+                    tt = datetime.fromisoformat(tt_str)
+                    if tt <= datetime.now():
+                        os.remove(schedule_file)
+                        return None
+                else:
+                    tt_str = None
+                    
+                state.is_scheduled = True
+                state.current_action = data.get("action")
+                state.current_mode = data.get("mode", "timer")
+                state.prevent_sleep_flag = data.get("prevent_sleep", False)
+                state.target_time = datetime.fromisoformat(tt_str) if tt_str else None
                 
-            state.is_scheduled = True
-            state.current_action = data.get("action")
-            state.current_mode = data.get("mode", "timer")
-            state.prevent_sleep_flag = data.get("prevent_sleep", False)
-            state.target_time = datetime.fromisoformat(tt_str) if tt_str else None
-            
-            state.smart_trigger_config = data.get("smart_config", {})
-            state.extra_config = data.get("extra_config", {})
-            
-            if state.target_time:
-                diff = (state.target_time - datetime.now()).total_seconds()
-                state.notified_5min = diff <= 300
-                state.notified_1min = diff <= 60
-            else:
-                state.notified_5min = False
-                state.notified_1min = False
-            
-            return {
-                "action": state.current_action,
-                "target_time": tt_str,
-                "prevent_sleep": state.prevent_sleep_flag,
-                "mode": state.current_mode,
-                "smart_config": state.smart_trigger_config,
-                "extra_config": state.extra_config
-            }
+                state.smart_trigger_config = data.get("smart_config", {})
+                state.extra_config = data.get("extra_config", {})
+                
+                if state.target_time:
+                    diff = (state.target_time - datetime.now()).total_seconds()
+                    state.notified_5min = diff <= 300
+                    state.notified_1min = diff <= 60
+                else:
+                    state.notified_5min = False
+                    state.notified_1min = False
+                
+                return {
+                    "action": state.current_action,
+                    "target_time": tt_str,
+                    "total_duration": data.get("total_duration", 0),
+                    "prevent_sleep": state.prevent_sleep_flag,
+                    "mode": state.current_mode,
+                    "smart_config": state.smart_trigger_config,
+                    "extra_config": state.extra_config
+                }
         except Exception:
             pass
     return None
 
 @eel.expose
 def schedule(minutes, action="hibernate", prevent=True, mode="timer", smart_type="network", smart_threshold=50, smart_duration=5, fade_out=False, wake_time="", discord_webhook=""):
-    if state.is_scheduled:
-        return {"status": "error", "message": "Jadwal sudah aktif."}
-    
-    state.current_action = action
-    state.current_mode = mode
-    state.prevent_sleep_flag = prevent
-    
-    if mode == "smart":
-        state.smart_trigger_config = {
-            "type": smart_type,
-            "threshold": smart_threshold, # Can be string for process
-            "duration": float(smart_duration) * 60 # convert to seconds
+    with state_lock:
+        if state.is_scheduled:
+            return {"status": "error", "message": "Jadwal sudah aktif."}
+        
+        state.current_action = action
+        state.current_mode = mode
+        state.prevent_sleep_flag = prevent
+        
+        if mode == "smart":
+            state.smart_trigger_config = {
+                "type": smart_type,
+                "threshold": smart_threshold,
+                "duration": float(smart_duration) * 60
+            }
+        else:
+            state.smart_trigger_config = {}
+        
+        state.extra_config = {
+            "fade_out": fade_out,
+            "wake_time": wake_time,
+            "discord_webhook": discord_webhook
         }
-    
-    state.extra_config = {
-        "fade_out": fade_out,
-        "wake_time": wake_time,
-        "discord_webhook": discord_webhook
-    }
-    
-    if mode == "timer":
-        state.target_time = datetime.now() + timedelta(minutes=int(minutes))
-        tt_str = state.target_time.isoformat()
-        state.notified_5min = int(minutes) < 5
-        state.notified_1min = int(minutes) < 1
-    else:
-        state.target_time = None
-        tt_str = None
-        state.notified_5min = False
-        state.notified_1min = False
         
-    state.is_scheduled = True
-    
-    if state.prevent_sleep_flag:
-        prevent_sleep(True)
+        if mode == "timer":
+            state.target_time = datetime.now() + timedelta(minutes=int(minutes))
+            tt_str = state.target_time.isoformat()
+            state.notified_5min = int(minutes) < 5
+            state.notified_1min = int(minutes) < 1
+        else:
+            state.target_time = None
+            tt_str = None
+            state.notified_5min = False
+            state.notified_1min = False
+            
+        state.is_scheduled = True
         
-    os.makedirs(get_data_dir(), exist_ok=True)
-    with open(get_schedule_file(), 'w') as f:
-        json.dump({
-            "action": state.current_action,
-            "target_time": tt_str,
-            "prevent_sleep": state.prevent_sleep_flag,
-            "mode": state.current_mode,
-            "smart_config": state.smart_trigger_config,
-            "extra_config": state.extra_config
-        }, f)
-        
+        if state.prevent_sleep_flag:
+            prevent_sleep(True)
+            
+        os.makedirs(get_data_dir(), exist_ok=True)
+        try:
+            with open(get_schedule_file(), 'w') as f:
+                json.dump({
+                    "action": state.current_action,
+                    "target_time": tt_str,
+                    "total_duration": int(minutes) * 60 if mode == "timer" else 0,
+                    "prevent_sleep": state.prevent_sleep_flag,
+                    "mode": state.current_mode,
+                    "smart_config": state.smart_trigger_config,
+                    "extra_config": state.extra_config
+                }, f)
+        except Exception:
+            pass
+            
     history_msg = f"Menjadwalkan {action.upper()} ({mode.capitalize()})"
     if mode == "timer":
         history_msg += f" untuk {state.target_time.strftime('%H:%M')}"
@@ -300,24 +324,35 @@ def schedule(minutes, action="hibernate", prevent=True, mode="timer", smart_type
 
 @eel.expose
 def cancel():
-    global tray_icon_instance
-    if tray_icon_instance:
-        tray_icon_instance.title = "Aether Sleep"
-    state.is_scheduled = False
-    state.target_time = None
-    state.current_action = None
-    state.current_mode = None
-    if state.prevent_sleep_flag:
-        prevent_sleep(False)
-    state.prevent_sleep_flag = False
-    
-    try:
-        os.remove(get_schedule_file())
-    except Exception as e:
-        pass
+    global tray_icon_instance, wake_timer_handle
+    webhook = None
+    with state_lock:
+        if tray_icon_instance:
+            tray_icon_instance.title = "Aether Sleep"
+        state.is_scheduled = False
+        state.target_time = None
+        state.current_action = None
+        state.current_mode = None
+        if state.prevent_sleep_flag:
+            prevent_sleep(False)
+        state.prevent_sleep_flag = False
+        
+        if wake_timer_handle:
+            try:
+                ctypes.windll.kernel32.CancelWaitableTimer(wake_timer_handle)
+                ctypes.windll.kernel32.CloseHandle(wake_timer_handle)
+            except Exception:
+                pass
+            wake_timer_handle = None
+        
+        try:
+            os.remove(get_schedule_file())
+        except Exception:
+            pass
+            
+        webhook = state.extra_config.get("discord_webhook")
+        
     activity_history.add_history("Membatalkan jadwal sleep", "cancel")
-    
-    webhook = state.extra_config.get("discord_webhook")
     if webhook:
         send_discord_message(webhook, "❌ **Aether Sleep**: Jadwal dibatalkan oleh user.")
     
@@ -361,7 +396,7 @@ def execute_action(action):
     cancel()
     activity_history.add_history(f"Mengeksekusi aksi: {action.upper()}", "execute", action)
     success = execute_os_action(action)
-    if success:
+    if success and action == "shutdown":
         os._exit(0)
     return {"status": "success" if success else "error"}
 
@@ -369,8 +404,11 @@ def execute_action(action):
 def get_presets():
     try:
         with open(get_presets_file(), 'r') as f:
-            return json.load(f)
-    except Exception as e:
+            data = json.load(f)
+            if not isinstance(data, list):
+                return [15, 30, 45, 60]
+            return data
+    except Exception:
         return [15, 30, 45, 60]
 
 @eel.expose
@@ -380,8 +418,11 @@ def add_preset(minutes):
         presets.append(minutes)
         presets.sort()
         os.makedirs(get_data_dir(), exist_ok=True)
-        with open(get_presets_file(), 'w') as f:
-            json.dump(presets, f)
+        try:
+            with open(get_presets_file(), 'w') as f:
+                json.dump(presets, f)
+        except Exception:
+            pass
     return presets
 
 @eel.expose
@@ -390,8 +431,11 @@ def remove_preset(minutes):
     if minutes in presets:
         presets.remove(minutes)
         os.makedirs(get_data_dir(), exist_ok=True)
-        with open(get_presets_file(), 'w') as f:
-            json.dump(presets, f)
+        try:
+            with open(get_presets_file(), 'w') as f:
+                json.dump(presets, f)
+        except Exception:
+            pass
     return presets
 
 @eel.expose
@@ -405,10 +449,13 @@ def get_stats():
 @eel.expose
 def get_setting(key, default_val=None):
     try:
-        with open(get_settings_file(), 'r') as f:
-            data = json.load(f)
-            return data.get(key, default_val)
-    except Exception as e:
+        if os.path.exists(get_settings_file()):
+            with open(get_settings_file(), 'r') as f:
+                data = json.load(f)
+                if isinstance(data, dict):
+                    return data.get(key, default_val)
+        return default_val
+    except Exception:
         return default_val
 
 @eel.expose
@@ -417,13 +464,18 @@ def save_setting(key, value):
         os.makedirs(get_data_dir(), exist_ok=True)
         data = {}
         if os.path.exists(get_settings_file()):
-            with open(get_settings_file(), 'r') as f:
-                data = json.load(f)
+            try:
+                with open(get_settings_file(), 'r') as f:
+                    data = json.load(f)
+                    if not isinstance(data, dict):
+                        data = {}
+            except Exception:
+                data = {}
         data[key] = value
         with open(get_settings_file(), 'w') as f:
             json.dump(data, f)
         return True
-    except Exception as e:
+    except Exception:
         return False
 
 # Background Timer Logic
@@ -431,6 +483,7 @@ def background_timer_loop():
     global tray_icon_instance
     
     consecutive_idle_seconds = 0
+    non_idle_seconds = 0
     last_net_io = psutil.net_io_counters()
     
     fade_started = False
@@ -438,39 +491,51 @@ def background_timer_loop():
     initial_volume = 1.0
     fade_duration_secs = 300 # 5 minutes default
     
-    def trigger_action():
-        action_to_exec = state.current_action
-        if state.extra_config.get("wake_time"):
-            target_dt = parse_wake_time(state.extra_config.get("wake_time"))
+    def trigger_action(action_to_exec, extra_cfg):
+        if extra_cfg.get("wake_time"):
+            target_dt = parse_wake_time(extra_cfg.get("wake_time"))
             if target_dt:
                 set_wake_timer(target_dt)
         activity_history.add_history(f"Mengeksekusi aksi: {action_to_exec.upper()}", "execute", action_to_exec)
         
-        webhook = state.extra_config.get("discord_webhook")
+        webhook = extra_cfg.get("discord_webhook")
         if webhook:
             send_discord_message(webhook, f"🚀 **Aether Sleep**: Mengeksekusi {action_to_exec.upper()} sekarang. Sampai jumpa!")
             
         cancel()
         execute_os_action(action_to_exec)
-        sys.exit(0)
+        if action_to_exec == "shutdown":
+            sys.exit(0)
     
     while True:
         try:
-            if state.is_scheduled:
-                if state.current_mode == "timer" and state.target_time:
+            with state_lock:
+                is_scheduled = state.is_scheduled
+                current_mode = state.current_mode
+                target_time = state.target_time
+                current_action = state.current_action
+                notified_5min = state.notified_5min
+                notified_1min = state.notified_1min
+                extra_config = dict(state.extra_config) if state.extra_config else {}
+                smart_config = dict(state.smart_trigger_config) if state.smart_trigger_config else {}
+                
+            if is_scheduled:
+                if current_mode == "timer" and target_time:
                     now = datetime.now()
-                    diff = (state.target_time - now).total_seconds()
+                    diff = (target_time - now).total_seconds()
                     
-                    if diff <= 300 and not state.notified_5min:
-                        show_notification("Peringatan 5 Menit", f"Komputer akan segera {state.current_action.upper()} dalam 5 menit.")
-                        state.notified_5min = True
-                        webhook = state.extra_config.get("discord_webhook")
+                    if diff <= 300 and not notified_5min:
+                        show_notification("Peringatan 5 Menit", f"Komputer akan segera {current_action.upper()} dalam 5 menit.")
+                        with state_lock:
+                            state.notified_5min = True
+                        webhook = extra_config.get("discord_webhook")
                         if webhook:
-                            send_discord_message(webhook, f"⚠️ **Aether Sleep Peringatan**: PC akan {state.current_action.upper()} dalam 5 menit!")
+                            send_discord_message(webhook, f"⚠️ **Aether Sleep Peringatan**: PC akan {current_action.upper()} dalam 5 menit!")
                     
-                    if diff <= 60 and not state.notified_1min:
-                        show_notification("Peringatan 1 Menit", f"Komputer akan segera {state.current_action.upper()} dalam 1 menit. Simpan pekerjaan Anda!")
-                        state.notified_1min = True
+                    if diff <= 60 and not notified_1min:
+                        show_notification("Peringatan 1 Menit", f"Komputer akan segera {current_action.upper()} dalam 1 menit. Simpan pekerjaan Anda!")
+                        with state_lock:
+                            state.notified_1min = True
                         
                     if tray_icon_instance:
                         total_secs = int(diff)
@@ -481,7 +546,7 @@ def background_timer_loop():
                             tray_icon_instance.title = new_title
                         
                     # Audio Fade-Out Logic
-                    if state.extra_config.get("fade_out") and PYCAW_AVAILABLE:
+                    if extra_config.get("fade_out") and PYCAW_AVAILABLE:
                         if diff <= fade_duration_secs and not fade_started:
                             fade_started = True
                             fade_start_time = now
@@ -490,7 +555,7 @@ def background_timer_loop():
                                 interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
                                 volume = ctypes.cast(interface, POINTER(IAudioEndpointVolume))
                                 initial_volume = volume.GetMasterVolumeLevelScalar()
-                            except Exception as e:
+                            except Exception:
                                 pass
                         
                         if fade_started and fade_start_time:
@@ -501,23 +566,24 @@ def background_timer_loop():
                                 interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
                                 volume = ctypes.cast(interface, POINTER(IAudioEndpointVolume))
                                 volume.SetMasterVolumeLevelScalar(initial_volume * ratio, None)
-                            except Exception as e:
+                            except Exception:
                                 pass
                         
                     if diff <= 0:
-                        trigger_action()
-                        state.notified_5min = False
-                        state.notified_1min = False
+                        trigger_action(current_action, extra_config)
+                        with state_lock:
+                            state.notified_5min = False
+                            state.notified_1min = False
                 
-                elif state.current_mode == "smart":
+                elif current_mode == "smart":
+                    stype = smart_config.get("type", "unknown")
                     if tray_icon_instance:
-                        new_title = "SMART MONITORING"
+                        new_title = f"SMART: Monitoring {stype.capitalize()}"
                         if tray_icon_instance.title != new_title:
                             tray_icon_instance.title = new_title
                             
-                    stype = state.smart_trigger_config.get("type")
-                    thresh = state.smart_trigger_config.get("threshold")
-                    dur = state.smart_trigger_config.get("duration", 300)
+                    thresh = smart_config.get("threshold")
+                    dur = smart_config.get("duration", 300)
                     
                     is_idle = False
                     
@@ -544,16 +610,22 @@ def background_timer_loop():
                     
                     if is_idle:
                         consecutive_idle_seconds += 1
+                        non_idle_seconds = 0
                         if consecutive_idle_seconds >= dur:
-                            trigger_action()
+                            trigger_action(current_action, extra_config)
                     else:
-                        consecutive_idle_seconds = 0
+                        non_idle_seconds += 1
+                        # Tolerance of 5 seconds spike before completely resetting
+                        if non_idle_seconds > 5:
+                            consecutive_idle_seconds = 0
             
             # Reset flags if cancelled
-            if not state.is_scheduled:
-                state.notified_5min = False
-                state.notified_1min = False
+            if not is_scheduled:
+                with state_lock:
+                    state.notified_5min = False
+                    state.notified_1min = False
                 consecutive_idle_seconds = 0
+                non_idle_seconds = 0
                 fade_started = False
                 
         except Exception as e:

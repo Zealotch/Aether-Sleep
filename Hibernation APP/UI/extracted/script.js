@@ -22,6 +22,11 @@ let countdownInterval;
         const val = e.target.value;
         eel.save_setting('lastAction', val)();
         
+        if (!targetTime) {
+            let baseAction = val.replace('_timer', '').replace('_smart', '');
+            startBtn.innerText = `Start ${baseAction.charAt(0).toUpperCase() + baseAction.slice(1)}`;
+        }
+        
         if (val.includes('_smart')) {
             smartTriggerPanel.classList.remove('hidden');
             smartTriggerPanel.classList.add('flex');
@@ -333,9 +338,9 @@ let countdownInterval;
         const btns = document.querySelectorAll('.preset-btn');
         btns.forEach(btn => {
             if(parseInt(btn.innerText) === m) {
-                btn.className = "preset-btn glass-panel-2 px-5 py-2 rounded-full font-label-md text-primary border-primary-fixed-dim transition-all duration-300 shadow-[0_0_15px_rgba(0,219,233,0.2)] transform -translate-y-[1px]";
+                btn.className = "preset-btn glass-panel-2 px-5 py-2 rounded-full font-label-md text-primary border-primary-fixed-dim transition-all duration-300 shadow-[0_0_15px_rgba(0,219,233,0.3)] transform scale-[1.05]";
             } else {
-                btn.className = "preset-btn glass-panel-1 px-5 py-2 rounded-full font-label-md text-on-surface-variant hover:text-white hover:border-primary-fixed-dim/50 hover:bg-[#1E293B]/60 transition-all duration-300 hover:shadow-[0_0_15px_rgba(0,219,233,0.15)] transform hover:-translate-y-[1px]";
+                btn.className = "preset-btn glass-panel-1 px-5 py-2 rounded-full font-label-md text-on-surface-variant hover:text-white hover:border-primary-fixed-dim/50 hover:bg-[#1E293B]/60 transition-all duration-300 hover:shadow-[0_0_15px_rgba(0,219,233,0.15)] transform hover:scale-[1.02]";
             }
         });
         
@@ -346,7 +351,7 @@ let countdownInterval;
         presetContainer.innerHTML = '';
         presets.forEach(minutes => {
             const btn = document.createElement('button');
-            btn.className = "preset-btn glass-panel-1 px-5 py-2 rounded-full font-label-md text-on-surface-variant hover:text-white hover:border-primary-fixed-dim/50 hover:bg-[#1E293B]/60 transition-all duration-300 hover:shadow-[0_0_15px_rgba(0,219,233,0.15)] transform hover:-translate-y-[1px]";
+            btn.className = "preset-btn glass-panel-1 px-5 py-2 rounded-full font-label-md text-on-surface-variant hover:text-white hover:border-primary-fixed-dim/50 hover:bg-[#1E293B]/60 transition-all duration-300 hover:shadow-[0_0_15px_rgba(0,219,233,0.15)] transform hover:scale-[1.02]";
             btn.innerText = `${minutes}m`;
             
             // Left click to select
@@ -360,8 +365,15 @@ let countdownInterval;
                 e.preventDefault();
                 if(targetTime) return;
                 playClickSound();
-                const newPresets = await eel.remove_preset(minutes)();
-                renderPresets(newPresets);
+                
+                // Visual feedback (fade out)
+                btn.style.transform = 'scale(0.8)';
+                btn.style.opacity = '0';
+                
+                setTimeout(async () => {
+                    const newPresets = await eel.remove_preset(minutes)();
+                    renderPresets(newPresets);
+                }, 200);
             });
             
             presetContainer.appendChild(btn);
@@ -392,9 +404,16 @@ let countdownInterval;
         playClickSound();
         const val = parseInt(customMinutesInput.value);
         if(!isNaN(val) && val > 0) {
+            customMinutesInput.classList.remove('border-red-400');
             const newPresets = await eel.add_preset(val)();
             renderPresets(newPresets);
             customMinutesInput.value = '';
+        } else {
+            // Visual validation error
+            customMinutesInput.classList.add('border-red-400');
+            setTimeout(() => {
+                customMinutesInput.classList.remove('border-red-400');
+            }, 1500);
         }
     });
 
@@ -539,100 +558,131 @@ let countdownInterval;
         closeClockModal();
     });
 
+    let totalDurationSeconds = 0;
+
     eel.expose(sync_cancel_from_backend);
     function sync_cancel_from_backend() {
         if (targetTime) {
             clearInterval(countdownInterval);
             targetTime = null;
-            startBtn.innerText = "Start Sleep";
-            statusLabel.innerText = "Ready";
+            let selectedAction = actionSelect.value.replace('_timer', '').replace('_smart', '');
+            startBtn.innerText = `Start ${selectedAction.charAt(0).toUpperCase() + selectedAction.slice(1)}`;
+            statusLabel.innerText = "READY";
             pulseRing.classList.remove('animate-pulse');
+            ring.classList.add('opacity-30');
+            ring.classList.remove('glow-active');
+            displayTimer.classList.remove('text-[36px]', 'tracking-normal');
+            displayTimer.classList.add('text-[64px]', 'tracking-tighter');
             setInputsDisabled(false);
             document.title = "Power Timer - Aether Sleep";
         }
     }
 
+    function startCountdownTimer(baseAction) {
+        clearInterval(countdownInterval);
+        countdownInterval = setInterval(() => {
+            const now = new Date();
+            const diff = targetTime - now;
+            if (diff <= 0) {
+                clearInterval(countdownInterval);
+                targetTime = null;
+                eel.execute_action(baseAction)();
+            } else {
+                const totalSeconds = Math.floor(diff / 1000);
+                const m = Math.floor(totalSeconds / 60);
+                const s = totalSeconds % 60;
+                updateDisplay(m, s);
+                
+                // Calculate percentage remaining (1.0 to 0.0)
+                const pct = totalDurationSeconds > 0 ? (totalSeconds / totalDurationSeconds) : 0;
+                ring.style.strokeDashoffset = 880 - (880 * pct);
+            }
+        }, 1000);
+    }
+
+    let isToggling = false;
     async function toggleSleep() {
-        if (targetTime) {
-            // Cancel
-            await eel.cancel()();
-            clearInterval(countdownInterval);
-            targetTime = null;
-            startBtn.innerText = "Start Sleep";
-            statusLabel.innerText = "Ready";
-            pulseRing.classList.remove('animate-pulse');
-            ring.style.strokeDashoffset = 0;
-            setDuration(currentMinutes);
-            document.title = "Power Timer - Aether Sleep";
-            
-            // Re-enable inputs
-            setInputsDisabled(false);
-        } else {
-            // Start
-            let selectedAction = actionSelect.value;
-            let mode = "timer";
-            let baseAction = selectedAction.replace('_timer', '').replace('_smart', '');
-            
-            if (selectedAction.includes("_smart")) {
-                mode = "smart";
-            }
-            
-            const prevent = keepAwakeCheck.checked;
-            if (!prevent) {
-                alert("Harap pastikan pekerjaan Anda sudah disimpan!");
-                return;
-            }
-            
-            const res = await eel.schedule(
-                currentMinutes, 
-                baseAction, 
-                prevent, 
-                mode,
-                smartType.value,
-                smartThreshold.value,
-                smartDuration.value,
-                fadeoutToggle.checked,
-                autowakeTrigger.dataset.value,
-                "" // discordWebhook removed
-            )();
-            
-            if (res.status === "success") {
-                targetTime = mode === "timer" ? new Date(res.target_time) : "smart";
-                startBtn.innerText = "Cancel Sleep";
-                statusLabel.innerText = `${baseAction.toUpperCase()} IN`;
-                pulseRing.classList.add('animate-pulse');
+        if (isToggling) return;
+        isToggling = true;
+        startBtn.classList.add('opacity-50', 'pointer-events-none');
+        
+        try {
+            if (targetTime) {
+                // Cancel
+                await eel.cancel()();
+                clearInterval(countdownInterval);
+                targetTime = null;
+                let selectedAction = actionSelect.value.replace('_timer', '').replace('_smart', '');
+                startBtn.innerText = `Start ${selectedAction.charAt(0).toUpperCase() + selectedAction.slice(1)}`;
+                statusLabel.innerText = "READY";
+                pulseRing.classList.remove('animate-pulse');
+                ring.style.strokeDashoffset = 0;
+                ring.classList.add('opacity-30');
+                ring.classList.remove('glow-active');
+                displayTimer.classList.remove('text-[36px]', 'tracking-normal');
+                displayTimer.classList.add('text-[64px]', 'tracking-tighter');
+                setDuration(currentMinutes);
+                document.title = "Power Timer - Aether Sleep";
                 
-                // Disable inputs
-                setInputsDisabled(true);
+                // Re-enable inputs
+                setInputsDisabled(false);
+            } else {
+                // Start
+                let selectedAction = actionSelect.value;
+                let mode = "timer";
+                let baseAction = selectedAction.replace('_timer', '').replace('_smart', '');
                 
-                if (mode === "timer") {
-                    const totalSecondsStart = currentMinutes * 60;
-    
-                    countdownInterval = setInterval(() => {
-                        const now = new Date();
-                        const diff = targetTime - now;
-                        if (diff <= 0) {
-                            clearInterval(countdownInterval);
-                            targetTime = null;
-                            eel.execute_action(baseAction)();
-                        } else {
-                            const totalSeconds = Math.floor(diff / 1000);
-                            const m = Math.floor(totalSeconds / 60);
-                            const s = totalSeconds % 60;
-                            updateDisplay(m, s);
-                            
-                            // Calculate percentage remaining (1.0 to 0.0)
-                            const pct = totalSeconds / totalSecondsStart;
-                            ring.style.strokeDashoffset = 880 - (880 * pct);
-                        }
-                    }, 1000);
-                } else {
-                    // Smart mode visual
-                    displayTimer.innerText = "SMART";
-                    statusLabel.innerText = "MONITORING " + smartType.value.toUpperCase();
-                    ring.style.strokeDashoffset = 0; // Filled visually to indicate active tracking
+                if (selectedAction.includes("_smart")) {
+                    mode = "smart";
+                }
+                
+                const prevent = keepAwakeCheck.checked;
+                if (!prevent) {
+                    alert("Harap pastikan pekerjaan Anda sudah disimpan!");
+                    // Jangan return langsung dari try, biarkan ke finally
+                    return;
+                }
+                
+                const res = await eel.schedule(
+                    currentMinutes, 
+                    baseAction, 
+                    prevent, 
+                    mode,
+                    smartType.value,
+                    smartThreshold.value,
+                    smartDuration.value,
+                    fadeoutToggle.checked,
+                    autowakeTrigger.dataset.value,
+                    "" // discordWebhook removed
+                )();
+                
+                if (res.status === "success") {
+                    targetTime = mode === "timer" ? new Date(res.target_time) : "smart";
+                    startBtn.innerText = `Cancel ${baseAction.charAt(0).toUpperCase() + baseAction.slice(1)}`;
+                    statusLabel.innerText = "RUNNING";
+                    pulseRing.classList.add('animate-pulse');
+                    ring.classList.remove('opacity-30');
+                    ring.classList.add('glow-active');
+                    
+                    // Disable inputs
+                    setInputsDisabled(true);
+                    
+                    if (mode === "timer") {
+                        totalDurationSeconds = currentMinutes * 60;
+                        startCountdownTimer(baseAction);
+                    } else {
+                        // Smart mode visual
+                        displayTimer.classList.remove('text-[64px]', 'tracking-tighter');
+                        displayTimer.classList.add('text-[36px]', 'tracking-normal');
+                        displayTimer.innerText = "MONITORING";
+                        statusLabel.innerText = "SMART TRIGGER";
+                        ring.style.strokeDashoffset = 0; // Filled visually to indicate active tracking
+                    }
                 }
             }
+        } finally {
+            isToggling = false;
+            startBtn.classList.remove('opacity-50', 'pointer-events-none');
         }
     }
 
@@ -652,48 +702,61 @@ let countdownInterval;
             const existing = await eel.check_existing_schedule()();
             
             if (existing) {
-                          let baseAction = existing.action;
-                          if (existing.mode === "timer" && existing.target_time) {
-                              targetTime = new Date(existing.target_time);
-                          } else {
-                              targetTime = "smart";
-                        displayTimer.innerText = "SMART";
-                        
-                        // set selects based on config
-                        if (existing.smart_config) {
-                            smartType.value = existing.smart_config.type || "network";
-                            smartThreshold.value = existing.smart_config.threshold || 50;
-                            smartDuration.value = (existing.smart_config.duration / 60) || 5;
-                        }
-                        actionSelect.value = baseAction + "_smart";
-                        actionSelect.dispatchEvent(new Event('change'));
-                        
-                        statusLabel.innerText = "MONITORING " + smartType.value.toUpperCase();
-                        ring.style.strokeDashoffset = 0;
+                let baseAction = existing.action;
+                if (existing.mode === "timer" && existing.target_time) {
+                    targetTime = new Date(existing.target_time);
+                    totalDurationSeconds = existing.total_duration || (currentMinutes * 60);
+                } else {
+                    targetTime = "smart";
+                    displayTimer.classList.remove('text-[64px]', 'tracking-tighter');
+                    displayTimer.classList.add('text-[36px]', 'tracking-normal');
+                    displayTimer.innerText = "MONITORING";
+                    
+                    // set selects based on config
+                    if (existing.smart_config) {
+                        smartType.value = existing.smart_config.type || "network";
+                        smartThreshold.value = existing.smart_config.threshold || 50;
+                        smartDuration.value = (existing.smart_config.duration / 60) || 5;
                     }
+                    actionSelect.value = baseAction + "_smart";
+                    actionSelect.dispatchEvent(new Event('change'));
                     
-                    if (existing.extra_config) {
-                        fadeoutToggle.checked = existing.extra_config.fade_out || false;
-                        if (existing.extra_config.wake_time) {
-                            autowakeTrigger.dataset.value = existing.extra_config.wake_time;
-                            autowakeTrigger.innerText = existing.extra_config.wake_time;
-                        }
+                    statusLabel.innerText = "SMART TRIGGER";
+                    ring.style.strokeDashoffset = 0;
+                }
+                
+                if (existing.extra_config) {
+                    fadeoutToggle.checked = existing.extra_config.fade_out || false;
+                    if (existing.extra_config.wake_time) {
+                        autowakeTrigger.dataset.value = existing.extra_config.wake_time;
+                        autowakeTrigger.innerText = existing.extra_config.wake_time;
                     }
-                    
-                    startBtn.innerText = "Cancel Sleep";
-                    statusLabel.innerText = `${baseAction.toUpperCase()} IN`;
-                    pulseRing.classList.add('animate-pulse');
-                    
-                    // Disable inputs
+                }
+                
+                startBtn.innerText = `Cancel ${baseAction.charAt(0).toUpperCase() + baseAction.slice(1)}`;
+                statusLabel.innerText = existing.mode === "smart" ? "SMART TRIGGER" : "RUNNING";
+                pulseRing.classList.add('animate-pulse');
+                ring.classList.remove('opacity-30');
+                ring.classList.add('glow-active');
+                
+                // Disable inputs
                 setInputsDisabled(true);
-                    
-                    // Render presets but they will be non-clickable visually
-                    const presets = await eel.get_presets()();
-                    renderPresets(presets);
+                
+                if (existing.mode === "timer" && existing.target_time) {
+                    startCountdownTimer(baseAction);
+                }
+                
+                // Render presets but they will be non-clickable visually
+                const presets = await eel.get_presets()();
+                renderPresets(presets);
                     
                 } else {
-                    statusLabel.innerText = "Ready";
+                    statusLabel.innerText = "READY";
                     pulseRing.classList.remove('animate-pulse');
+                    ring.classList.add('opacity-30');
+                    ring.classList.remove('glow-active');
+                    displayTimer.classList.remove('text-[36px]', 'tracking-normal');
+                    displayTimer.classList.add('text-[64px]', 'tracking-tighter');
                     const presets = await eel.get_presets()();
                     renderPresets(presets);
                 }
@@ -805,7 +868,7 @@ let countdownInterval;
     });
     
     
-        // Global Poller for Syncing with Backend
+    // Global Poller for Syncing with Backend
     setInterval(async () => {
         try {
             const state = await eel.get_current_state()();
@@ -813,25 +876,17 @@ let countdownInterval;
                 if (targetTime) {
                     // Backend was cancelled or finished, reset UI
                     targetTime = null;
-                    startBtn.innerText = "Start Sleep";
-                    statusLabel.innerText = "IDLE";
+                    clearInterval(countdownInterval);
+                    let selectedAction = actionSelect.value.replace('_timer', '').replace('_smart', '');
+                    startBtn.innerText = `Start ${selectedAction.charAt(0).toUpperCase() + selectedAction.slice(1)}`;
+                    statusLabel.innerText = "READY";
                     pulseRing.classList.remove('animate-pulse');
                     setInputsDisabled(false);
                     setDuration(currentMinutes); 
-                }
-            } else if (state.status === "running") {
-                if (state.mode === "timer") {
-                    const diffSecs = state.remaining_seconds;
-                    if (diffSecs > 0) {
-                         const m = Math.floor(diffSecs / 60);
-                         const s = Math.floor(diffSecs % 60);
-                         updateDisplay(m, s);
-                         const totalSecondsStart = currentMinutes * 60;
-                         const pct = diffSecs / totalSecondsStart;
-                         ring.style.strokeDashoffset = 880 - (880 * pct);
-                    }
+                    document.title = "Power Timer - Aether Sleep";
                 }
             }
+            // If running, we let the local countdownInterval handle the smooth UI updates
         } catch (e) {
             // ignore eel connection errors during shutdown
         }
