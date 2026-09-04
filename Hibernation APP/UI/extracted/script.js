@@ -585,8 +585,10 @@ let countdownInterval;
             const diff = targetTime - now;
             if (diff <= 0) {
                 clearInterval(countdownInterval);
-                targetTime = null;
-                eel.execute_action(baseAction)();
+                updateDisplay(0, 0);
+                // Do NOT call eel.execute_action() here.
+                // Backend background_timer_loop is the single source of truth for execution.
+                // The global poller will detect backend state=idle and reset the UI.
             } else {
                 const totalSeconds = Math.floor(diff / 1000);
                 const m = Math.floor(totalSeconds / 60);

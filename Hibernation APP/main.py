@@ -96,11 +96,19 @@ def show_notification(title, message):
     except Exception:
         pass
 
+ctypes.windll.kernel32.SetThreadExecutionState.argtypes = [ctypes.c_uint32]
+ctypes.windll.kernel32.SetThreadExecutionState.restype = ctypes.c_uint32
+
 def prevent_sleep(enable=True):
+    """Must be called from the thread that should hold the execution state (background_timer_loop)."""
+    ES_CONTINUOUS = 0x80000000
+    ES_SYSTEM_REQUIRED = 0x00000001
     if enable:
-        ctypes.windll.kernel32.SetThreadExecutionState(0x80000000 | 0x00000002)
+        result = ctypes.windll.kernel32.SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)
     else:
-        ctypes.windll.kernel32.SetThreadExecutionState(0x80000000)
+        result = ctypes.windll.kernel32.SetThreadExecutionState(ES_CONTINUOUS)
+    if result == 0:
+        print(f"SetThreadExecutionState failed: {ctypes.WinError()}")
 
 def execute_os_action(action):
     try:
@@ -291,9 +299,7 @@ def schedule(minutes, action="hibernate", prevent=True, mode="timer", smart_type
             state.notified_1min = False
             
         state.is_scheduled = True
-        
-        if state.prevent_sleep_flag:
-            prevent_sleep(True)
+        # NOTE: prevent_sleep is NOT called here. background_timer_loop owns SetThreadExecutionState.
             
         os.makedirs(get_data_dir(), exist_ok=True)
         try:
@@ -333,8 +339,7 @@ def cancel():
         state.target_time = None
         state.current_action = None
         state.current_mode = None
-        if state.prevent_sleep_flag:
-            prevent_sleep(False)
+        # NOTE: prevent_sleep is NOT called here. background_timer_loop owns SetThreadExecutionState.
         state.prevent_sleep_flag = False
         
         if wake_timer_handle:
@@ -491,7 +496,10 @@ def background_timer_loop():
     initial_volume = 1.0
     fade_duration_secs = 300 # 5 minutes default
     
+    keep_awake_active = False  # Tracks whether SetThreadExecutionState is currently held
+    
     def trigger_action(action_to_exec, extra_cfg):
+        nonlocal keep_awake_active
         if extra_cfg.get("wake_time"):
             target_dt = parse_wake_time(extra_cfg.get("wake_time"))
             if target_dt:
@@ -503,6 +511,9 @@ def background_timer_loop():
             send_discord_message(webhook, f"🚀 **Aether Sleep**: Mengeksekusi {action_to_exec.upper()} sekarang. Sampai jumpa!")
             
         cancel()
+        if keep_awake_active:
+            prevent_sleep(False)
+            keep_awake_active = False
         execute_os_action(action_to_exec)
         if action_to_exec == "shutdown":
             sys.exit(0)
@@ -516,8 +527,15 @@ def background_timer_loop():
                 current_action = state.current_action
                 notified_5min = state.notified_5min
                 notified_1min = state.notified_1min
+                prevent_sleep_flag = state.prevent_sleep_flag
                 extra_config = dict(state.extra_config) if state.extra_config else {}
                 smart_config = dict(state.smart_trigger_config) if state.smart_trigger_config else {}
+                
+            # --- Manage keep-awake state from THIS thread only ---
+            should_keep_awake = is_scheduled and prevent_sleep_flag
+            if should_keep_awake != keep_awake_active:
+                prevent_sleep(should_keep_awake)
+                keep_awake_active = should_keep_awake
                 
             if is_scheduled:
                 if current_mode == "timer" and target_time:
