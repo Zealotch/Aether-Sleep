@@ -377,7 +377,40 @@ def tray_cancel_schedule():
 
 # Window Controls
 def get_hwnd():
-    return ctypes.windll.user32.FindWindowW(None, "Power Timer - Aether Sleep")
+    user32 = ctypes.windll.user32
+    hwnd = user32.FindWindowW(None, "Power Timer - Aether Sleep")
+    if hwnd:
+        return hwnd
+    found = [None]
+    def enum_cb(h, _):
+        if user32.IsWindowVisible(h):
+            length = user32.GetWindowTextLengthW(h)
+            if length > 0:
+                buff = ctypes.create_unicode_buffer(length + 1)
+                user32.GetWindowTextW(h, buff, length + 1)
+                t = buff.value
+                if "Power Timer" in t or "Aether Sleep" in t:
+                    found[0] = h
+                    return False
+        return True
+    WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_int, ctypes.c_int)
+    user32.EnumWindows(WNDENUMPROC(enum_cb), 0)
+    return found[0]
+
+def show_window():
+    try:
+        hwnd = get_hwnd()
+        if hwnd and len(eel._websockets) > 0:
+            user32 = ctypes.windll.user32
+            if user32.IsIconic(hwnd):
+                user32.ShowWindow(hwnd, 9) # SW_RESTORE
+            else:
+                user32.ShowWindow(hwnd, 5) # SW_SHOW
+            user32.SetForegroundWindow(hwnd)
+        else:
+            eel.show('index.html')
+    except Exception as e:
+        print("Failed to start/restore window:", e)
 
 @eel.expose
 def start_drag():
@@ -653,19 +686,48 @@ def background_timer_loop():
 
 # Main Application Start
 if __name__ == '__main__':
-    # Single Instance Lock
+    # Single Instance Lock & IPC
     mutex_name = "Global\\AetherSleep_Mutex_v1"
+    show_event_names = ["Global\\AetherSleep_ShowEvent_v1", "Local\\AetherSleep_ShowEvent_v1"]
     kernel32 = ctypes.windll.kernel32
     mutex = kernel32.CreateMutexW(None, False, mutex_name)
     last_error = kernel32.GetLastError()
     if last_error == 183: # ERROR_ALREADY_EXISTS
-        user32 = ctypes.windll.user32
-        hwnd = user32.FindWindowW(None, "Power Timer - Aether Sleep")
-        if hwnd:
-            if user32.IsIconic(hwnd):
-                user32.ShowWindow(hwnd, 9) # SW_RESTORE
-            user32.SetForegroundWindow(hwnd)
+        # Signal the running instance to show/restore its window
+        EVENT_MODIFY_STATE = 0x0002
+        signaled = False
+        for ev_name in show_event_names:
+            event = kernel32.OpenEventW(EVENT_MODIFY_STATE, False, ev_name)
+            if event:
+                kernel32.SetEvent(event)
+                kernel32.CloseHandle(event)
+                signaled = True
+                break
+        if not signaled:
+            hwnd = get_hwnd()
+            if hwnd:
+                user32 = ctypes.windll.user32
+                if user32.IsIconic(hwnd):
+                    user32.ShowWindow(hwnd, 9)
+                else:
+                    user32.ShowWindow(hwnd, 5)
+                user32.SetForegroundWindow(hwnd)
         sys.exit(0)
+
+    # First instance: create the show event and start listener thread
+    show_event = None
+    for ev_name in show_event_names:
+        show_event = kernel32.CreateEventW(None, False, False, ev_name)
+        if show_event and kernel32.GetLastError() != 5:
+            break
+
+    if show_event:
+        def single_instance_listener():
+            while True:
+                res = kernel32.WaitForSingleObject(show_event, 0xFFFFFFFF)
+                if res == 0: # WAIT_OBJECT_0
+                    show_window()
+        threading.Thread(target=single_instance_listener, daemon=True).start()
 
     # Initialize Eel with extracted UI folder
     ui_folder = os.path.join(get_resource_dir(), "UI", "extracted")
@@ -683,18 +745,6 @@ if __name__ == '__main__':
     def on_exit(icon, item):
         icon.stop()
         sys.exit(0)
-    
-    def show_window():
-        try:
-            if len(eel._websockets) > 0:
-                hwnd = ctypes.windll.user32.FindWindowW(None, "Power Timer - Aether Sleep")
-                if hwnd:
-                    ctypes.windll.user32.ShowWindow(hwnd, 9)
-                    ctypes.windll.user32.SetForegroundWindow(hwnd)
-            else:
-                eel.show('index.html')
-        except Exception as e:
-            print("Failed to start window", e)
             
     def tray_thread_func():
         global tray_icon_instance
